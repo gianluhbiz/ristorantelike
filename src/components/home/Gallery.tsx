@@ -1,21 +1,33 @@
-import { motion, useMotionValue, useReducedMotion, useScroll, useTransform } from "framer-motion";
+import {
+  motion,
+  useAnimationFrame,
+  useInView,
+  useMotionValue,
+  useReducedMotion,
+  useScroll,
+  useTransform,
+} from "framer-motion";
 import { useLayoutEffect, useRef, useState } from "react";
 import { gallery } from "../../data/home";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { Eyebrow, LineReveal, Reveal } from "../ui/Reveal";
 
+type Item = (typeof gallery)[number];
+
 function Heading() {
   return (
-    <div className="flex flex-col gap-6">
-      <Reveal>
-        <Eyebrow>Dal banco al tavolo</Eyebrow>
-      </Reveal>
-      <LineReveal
-        className="font-display text-5xl font-bold leading-[1.05] tracking-[-0.02em] sm:text-6xl"
-        lines={["Piatti veri,", "foto dei clienti."]}
-      />
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between lg:gap-10">
+      <div className="flex flex-col gap-6">
+        <Reveal>
+          <Eyebrow>Dal banco al tavolo</Eyebrow>
+        </Reveal>
+        <LineReveal
+          className="font-display text-5xl font-bold leading-[1.05] tracking-[-0.02em] sm:text-6xl"
+          lines={["Piatti veri,", "foto dei clienti."]}
+        />
+      </div>
       <Reveal delay={0.1}>
-        <p className="max-w-sm leading-relaxed text-rice/65">
+        <p className="max-w-sm leading-relaxed text-rice/65 lg:pb-2 lg:text-right">
           Sono i piatti come arrivano in sala, fotografati da chi li ha mangiati.
         </p>
       </Reveal>
@@ -23,24 +35,21 @@ function Heading() {
   );
 }
 
-function Card({ item, className = "" }: { item: (typeof gallery)[number]; className?: string }) {
-  const tall = item.h > item.w;
+/** Tutte le foto hanno la stessa altezza: la larghezza segue le proporzioni dell'immagine. */
+function Card({ item, className = "" }: { item: Item; className?: string }) {
   return (
-    <figure className={`group flex shrink-0 flex-col gap-4 ${className}`}>
-      <div
-        className={`overflow-hidden rounded-[1.75rem] bg-char ${
-          tall ? "aspect-[3/4] w-[68vw] sm:w-[340px] lg:h-[58vh] lg:w-auto" : "aspect-[4/3] w-[82vw] sm:w-[460px] lg:h-[50vh] lg:w-auto"
-        }`}
-      >
+    <figure className={`group flex shrink-0 flex-col gap-3 ${className}`}>
+      <div className="h-(--card-h) overflow-hidden rounded-[1.5rem] bg-char" style={{ aspectRatio: `${item.w} / ${item.h}` }}>
         <img
           src={item.src}
           alt={item.alt}
           loading="lazy"
           decoding="async"
-          className="size-full object-cover transition-transform duration-700 ease-out-strong [@media(hover:hover)]:group-hover:scale-[1.04]"
+          draggable={false}
+          className="size-full select-none object-cover transition-transform duration-700 ease-out-strong [@media(hover:hover)]:group-hover:scale-[1.04]"
         />
       </div>
-      <figcaption className="flex items-center gap-3 text-sm text-rice/70">
+      <figcaption className="flex items-center gap-2.5 text-sm text-rice/70">
         <span className="size-1.5 rounded-full bg-shu" />
         {item.caption}
       </figcaption>
@@ -48,7 +57,7 @@ function Card({ item, className = "" }: { item: (typeof gallery)[number]; classN
   );
 }
 
-/** Desktop: la fila scorre in orizzontale mentre la pagina scende. */
+/** Desktop: il titolo resta fermo, la fila di foto scorre in orizzontale mentre la pagina scende. */
 function PinnedGallery() {
   const sectionRef = useRef<HTMLElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -79,34 +88,107 @@ function PinnedGallery() {
 
   return (
     <section ref={sectionRef} className="relative" style={{ height: `calc(100vh + ${distance}px)` }}>
-      <div className="sticky top-0 flex h-screen flex-col justify-center overflow-hidden">
-        <motion.div ref={trackRef} style={{ transform }} className="flex w-max items-center gap-10 pl-8 pr-[8vw]">
-          <div className="w-[min(30rem,32vw)] shrink-0 pl-[max(0px,calc((100vw-80rem)/2))]">
-            <Heading />
-          </div>
-          {gallery.map((g, i) => (
-            <Card key={g.src} item={g} className={i % 2 ? "lg:translate-y-10" : "lg:-translate-y-6"} />
+      <div className="sticky top-0 flex h-screen flex-col justify-center gap-10 overflow-hidden pt-16">
+        <div className="mx-auto w-full max-w-7xl px-8">
+          <Heading />
+        </div>
+
+        <motion.div
+          ref={trackRef}
+          style={{ transform }}
+          className="flex w-max gap-6 [--card-h:min(50vh,480px)] pl-[max(2rem,calc((100vw-80rem)/2+2rem))] pr-[max(2rem,calc((100vw-80rem)/2+2rem))]"
+        >
+          {gallery.map((g) => (
+            <Card key={g.src} item={g} />
           ))}
         </motion.div>
-        <div className="mx-auto mt-12 h-px w-full max-w-7xl bg-rice/10 px-8">
-          <motion.div style={{ transform: bar }} className="h-px origin-left bg-shu-bright" />
+
+        <div className="mx-auto w-full max-w-7xl px-8">
+          <div className="h-px bg-rice/10">
+            <motion.div style={{ transform: bar }} className="h-px origin-left bg-shu-bright" />
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-/** Mobile e "riduci movimento": scorrimento orizzontale nativo con aggancio. */
-function SwipeGallery() {
+/**
+ * Mobile: carosello infinito. Scorre da solo, si trascina col dito e riparte con l'inerzia del gesto.
+ * Le foto sono ripetute due volte e la posizione si avvolge sulla larghezza di una serie.
+ */
+function InfiniteCarousel() {
+  const reduce = useReducedMotion();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const setRef = useRef<HTMLDivElement>(null);
+  const inView = useInView(wrapRef);
+  const x = useMotionValue(0);
+  const transform = useTransform(x, (v) => `translateX(${v}px)`);
+  const drag = useRef({ active: false, lastX: 0, lastT: 0, velocity: 0, moved: 0 });
+  const SPEED = 0.035; // px per ms
+
+  const wrap = (v: number) => {
+    const w = setRef.current?.offsetWidth ?? 0;
+    if (!w) return v;
+    return ((v % w) - w) % w;
+  };
+
+  useAnimationFrame((_, delta) => {
+    const d = drag.current;
+    if (!inView || d.active) return;
+    // Inerzia del lancio che si smorza, poi torna lo scorrimento automatico.
+    d.velocity *= Math.pow(0.94, delta / 16);
+    if (Math.abs(d.velocity) < 0.01) d.velocity = 0;
+    const auto = reduce ? 0 : -SPEED;
+    x.set(wrap(x.get() + (auto + d.velocity) * delta));
+  });
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    drag.current = { active: true, lastX: e.clientX, lastT: e.timeStamp, velocity: 0, moved: 0 };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d.active) return;
+    const dx = e.clientX - d.lastX;
+    const dt = Math.max(1, e.timeStamp - d.lastT);
+    d.velocity = dx / dt;
+    d.moved += Math.abs(dx);
+    d.lastX = e.clientX;
+    d.lastT = e.timeStamp;
+    x.set(wrap(x.get() + dx));
+  };
+  const onPointerUp = () => {
+    const d = drag.current;
+    d.active = false;
+    d.velocity = Math.max(-3, Math.min(3, d.velocity));
+  };
+
+  const set = (hidden?: boolean) => (
+    <div ref={hidden ? undefined : setRef} className="flex shrink-0 gap-4 pr-4" aria-hidden={hidden || undefined}>
+      {gallery.map((g) => (
+        <Card key={g.src} item={g} />
+      ))}
+    </div>
+  );
+
   return (
     <section className="py-24">
       <div className="mx-auto max-w-7xl px-4 sm:px-8">
         <Heading />
       </div>
-      <div className="mt-12 flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-px-4 px-4 pb-4 [scrollbar-width:none] sm:scroll-px-8 sm:px-8">
-        {gallery.map((g) => (
-          <Card key={g.src} item={g} className="snap-start" />
-        ))}
+      <div
+        ref={wrapRef}
+        className="mt-12 cursor-grab touch-pan-y overflow-hidden active:cursor-grabbing"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <motion.div style={{ transform }} className="flex w-max pl-4 [--card-h:16rem] sm:pl-8 sm:[--card-h:20rem]">
+          {set()}
+          {set(true)}
+        </motion.div>
       </div>
     </section>
   );
@@ -115,5 +197,5 @@ function SwipeGallery() {
 export default function Gallery() {
   const desktop = useMediaQuery("(min-width: 1024px)");
   const reduce = useReducedMotion();
-  return desktop && !reduce ? <PinnedGallery /> : <SwipeGallery />;
+  return desktop && !reduce ? <PinnedGallery /> : <InfiniteCarousel />;
 }
